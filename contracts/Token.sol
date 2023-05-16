@@ -43,14 +43,21 @@ contract Token is ERC20, Ownable, ReentrancyGuard {
     event ExcludeFromFees(address indexed account, bool isExcluded);
     event SetPair(address indexed pair, bool indexed value);
     event SwapAndLiquify(uint256 tokensSwapped, uint256 ethReceived, uint256 tokensIntoLiqudity);
+    event BuyTaxSet(uint lp, uint burn, uint marketing);
+    event SellTaxSet(uint lp, uint burn, uint marketing);
+    event LPThresholdSet(uint256 amount);
+    event MarketingThresholdSet(uint256 amount);
+    event BNBWithdrawn(address indexed to, uint256 amount);
+    event MarketingTokensWithdrawn(address indexed to, uint256 amount);
 
     modifier lockTheSwap {
+        require(!_inSwapAndLiquify, "Currently in swap and liquify");
         _inSwapAndLiquify = true;
         _;
         _inSwapAndLiquify = false;
     }
 
-    constructor(address _router) ERC20("LLFR2", "LLFR2") {
+    constructor(address _router) ERC20("Froggies Token", "FRGST") {
         _mint(msg.sender, 100000000000000 * 10 ** decimals());
 
         address pancakeRouter = _router; // PancakeSwap router address for BSC
@@ -222,12 +229,14 @@ contract Token is ERC20, Ownable, ReentrancyGuard {
         totalBuyFee = _lp + _burn + _marketing;
         require(totalBuyFee <= 10, "Total buy fees cannot be more than 10%");
         buyFees = Fees(_lp, _burn, _marketing);
+        emit BuyTaxSet(_lp, _burn, _marketing);
     }
 
     function setSellTaxes(uint _lp, uint _burn, uint _marketing) external onlyOwner {
         totalSellFee = _lp + _burn + _marketing;
         require(totalSellFee <= 10, "Total sell fees cannot be more than 10%");
         sellFees = Fees(_lp, _burn, _marketing);
+        emit SellTaxSet(_lp, _burn, _marketing);
     }
 
     function setLPThreshold(uint256 amount) public onlyOwner {
@@ -237,10 +246,12 @@ contract Token is ERC20, Ownable, ReentrancyGuard {
 
         require(amount >= minLpThreshold && amount <= maxLpThreshold, "LP Threshold must be within the allowed range");
         lpThreshold = amount;
+        emit LPThresholdSet(amount);
     }
 
     function setMarketingThreshold(uint256 amount) public onlyOwner{
         marketingThreshold = amount;
+        emit MarketingThresholdSet(amount);
     }
 
     //set marketing auto-swap to WBNB
@@ -255,12 +266,15 @@ contract Token is ERC20, Ownable, ReentrancyGuard {
 
     function withdrawBNB(address payable to) external onlyOwner nonReentrant {
         require(address(this).balance > 0, "No BNB to withdraw");
-        to.transfer(address(this).balance);
+        uint256 amount = address(this).balance;
+        to.transfer(amount);
+        emit BNBWithdrawn(to, amount);
     }
 
     function withdrawMarketingTokens(address to, uint256 amount) public onlyOwner nonReentrant {
         require(marketingCurrentAmount >= amount, "Not enough tokens in marketing balance");
         IERC20(address(this)).transfer(to, amount);
         marketingCurrentAmount = marketingCurrentAmount - amount;
+        emit MarketingTokensWithdrawn(to, amount);
     }
 }
