@@ -191,26 +191,24 @@ contract Token is ERC20, Ownable, ReentrancyGuard {
             else if(trade_type == 2 && !excludedFromFees[from]) {
                 if (sellFees.lp > 0) {
                     uint256 lpAmount = remainingAmount.mul(sellFees.lp).div(100);
-                    if (lpThreshold != 0 && (lpCurrentAmount.add(lpAmount) >= lpThreshold)) {
+                    lpCurrentAmount = lpCurrentAmount.add(lpAmount); // Always add lpAmount to lpCurrentAmount
+                    remainingAmount = remainingAmount.sub(lpAmount);
+                    super._transfer(from, address(this), lpAmount);
+                    // Check for threshold after adding lpAmount and swap if necessary
+                    if (lpThreshold != 0 && lpCurrentAmount >= lpThreshold) {
                         swapAndLiquify(lpCurrentAmount);
                         lpCurrentAmount = 0;  // Reset the lpCurrentAmount to 0 after swapAndLiquify is called
-                        remainingAmount = remainingAmount.sub(lpAmount);
-                    } else {
-                        lpCurrentAmount = lpCurrentAmount.add(lpAmount);
-                        remainingAmount = remainingAmount.sub(lpAmount);
-                        super._transfer(from, address(this), lpAmount);
                     }
                 }
                 if (sellFees.marketing > 0) {
                     uint256 marketingAmount = remainingAmount.mul(sellFees.marketing).div(100);
-                    if (isSwap && marketingThreshold != 0 && (marketingCurrentAmount.add(marketingAmount) >= marketingThreshold)) {
+                    marketingCurrentAmount = marketingCurrentAmount.add(marketingAmount); // Always add marketingAmount to marketingCurrentAmount
+                    remainingAmount = remainingAmount.sub(marketingAmount);
+                    super._transfer(from, address(this), marketingAmount);
+                    // Check for threshold after adding marketingAmount and swap if necessary
+                    if (isSwap && marketingThreshold != 0 && marketingCurrentAmount >= marketingThreshold) {
                         _swapTokensForBNBSimple(marketingCurrentAmount);
                         marketingCurrentAmount = 0; // Reset the marketingCurrentAmount to 0 because all tokens have been swapped
-                        remainingAmount = remainingAmount.sub(marketingAmount);
-                    } else {
-                        marketingCurrentAmount = marketingCurrentAmount.add(marketingAmount);
-                        remainingAmount = remainingAmount.sub(marketingAmount);
-                        super._transfer(from, address(this), marketingAmount);
                     }
                 }
                 if (sellFees.burn > 0) {
