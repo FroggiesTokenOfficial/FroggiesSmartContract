@@ -12,15 +12,15 @@ import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 contract Token is ERC20, Ownable, ReentrancyGuard {
     using SafeMath for uint256;
 
-    bool public isSwap;
+    bool public isSwap = true;
     bool private isInternalTransaction;
     bool _inSwapAndLiquify;
 
     IUniswapV2Router02 public uniswapV2Router;
     address public uniswapV2Pair;
 
-    uint public lpThreshold = 0;
-    uint public marketingThreshold = 1000000000000 * 10**18;
+    uint public lpThreshold = 10000000000 * 10**18;
+    uint public marketingThreshold = 100000000000 * 10**18;
     uint public lpCurrentAmount;
     uint public marketingCurrentAmount;
 
@@ -30,11 +30,11 @@ contract Token is ERC20, Ownable, ReentrancyGuard {
         uint marketing;
     }
 
-    Fees public buyFees = Fees(3, 3, 3);
-    Fees public sellFees = Fees(3, 3, 3);
+    Fees public buyFees = Fees(0, 0, 5);
+    Fees public sellFees = Fees(4, 1, 5);
 
-    uint256 public totalBuyFee = 9;
-    uint256 public totalSellFee = 9;
+    uint256 public totalBuyFee = 5;
+    uint256 public totalSellFee = 10;
 
     // mappings
     mapping (address => bool) public excludedFromFees;
@@ -146,6 +146,11 @@ contract Token is ERC20, Ownable, ReentrancyGuard {
         );
 
         isInternalTransaction = false;
+    }
+
+    // public func if anyone want burn some of their tokens
+    function publicBurn(uint amount) external {
+        super._burn(msg.sender, amount);
     }
 
     // Custom transfer function with buy and sell fees and burn functionality
