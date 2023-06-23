@@ -36,6 +36,12 @@ contract StakingContract is Ownable, ReentrancyGuard {
 	// Map to keep track of the reward rates based on staking period
     mapping(uint256 => uint256) public periodRates;
 
+    // New mapping to store the last emergencyUnstake time for each user
+    mapping(address => uint256) public lastEmergencyUnstakeTime;
+
+    // Cooldown period after emergencyUnstake
+    uint256 public cooldown = 1 days;
+
 	// Variables to define the penalty, burn rate and pool rate in case of emergency unstake
     uint256 public emergencyWithdrawalPenalty = 25;
     uint256 public burnRateEmergency = 40;
@@ -88,11 +94,11 @@ contract StakingContract is Ownable, ReentrancyGuard {
         stakers[msg.sender].burnRate = _burnRate;
         stakers[msg.sender].stakePeriod = _stakePeriod;
         stakers[msg.sender].burnAmount = burnAmount;
-        stakers[msg.sender].totalRewardAllocation = totalAllocation.sub(burnAmount);
+        stakers[msg.sender].totalRewardAllocation = totalAllocation.sub(burnAmount); // Update only the totalRewardAllocation
         stakers[msg.sender].lastRewardCalculation = block.timestamp;
 
         totalStaked = totalStaked.add(_amount);
-        totalAllocated = totalAllocated.add(totalAllocation);
+        totalAllocated = totalAllocated.add(stakers[msg.sender].totalRewardAllocation);
         totalBurned = totalBurned.add(burnAmount);
         stakingPool = stakingPool.sub(totalAllocation);
 
@@ -100,22 +106,38 @@ contract StakingContract is Ownable, ReentrancyGuard {
     }
 
     function calculateReward(address _staker) internal {
-        uint256 timeElapsed = block.timestamp.sub(stakers[_staker].lastRewardCalculation);
+        uint256 timeElapsed;
         uint256 rewardPerSecond = stakers[_staker].totalRewardAllocation.div(stakers[_staker].stakePeriod);
-        uint256 newReward = rewardPerSecond.mul(timeElapsed);
+        uint256 newReward;
 
+        // Check if the current time has surpassed the staking period.
+        if (block.timestamp > stakers[_staker].stakeTime.add(stakers[_staker].stakePeriod)) {
+            // If so, use the staking period end time for the final reward calculation.
+            timeElapsed = (stakers[_staker].stakeTime.add(stakers[_staker].stakePeriod)).sub(stakers[_staker].lastRewardCalculation);
+        } else {
+            // If not, calculate the time elapsed since the last reward calculation.
+            timeElapsed = block.timestamp.sub(stakers[_staker].lastRewardCalculation);
+        }
+
+        newReward = rewardPerSecond.mul(timeElapsed);
         stakers[_staker].reward = stakers[_staker].reward.add(newReward);
         stakers[_staker].lastRewardCalculation = block.timestamp;
-
         totalAllocated = totalAllocated.add(newReward);
     }
 
     function withdrawReward() external nonReentrant {
         require(stakers[msg.sender].amount > 0, "You are not staking");
+        
+        // Calculate and update the reward for the staker
         calculateReward(msg.sender);
+        
         uint256 reward = stakers[msg.sender].reward;
+        
+        // Update the staker's reward and total reward allocation
         stakers[msg.sender].reward = 0;
         stakers[msg.sender].totalRewardAllocation = stakers[msg.sender].totalRewardAllocation.sub(reward);
+        
+        // Transfer the reward tokens to the staker
         token.transfer(msg.sender, reward);
     }
 
@@ -130,12 +152,13 @@ contract StakingContract is Ownable, ReentrancyGuard {
         uint256 burnAmount = stakers[msg.sender].burnAmount;
 
         stakers[msg.sender].amount = 0;
+        stakers[msg.sender].stakeTime = 0;
         stakers[msg.sender].reward = 0;
         stakers[msg.sender].burnAmount = 0;
         stakers[msg.sender].totalRewardAllocation = 0;
 
         totalStaked = totalStaked.sub(amount);
-        totalAllocated = totalAllocated.sub(reward);
+        totalAllocated = totalAllocated.sub(reward); // Update only the reward amount
         totalBurned = totalBurned.add(burnAmount);
 
         burn(burnAmount);
@@ -145,8 +168,9 @@ contract StakingContract is Ownable, ReentrancyGuard {
         emit Burned(burnAmount);
     }
 
-    // Emergency unstake function with penalty
     function emergencyUnstake() external nonReentrant {
+        // Ensure that enough time has passed since the last emergency unstake
+        require(block.timestamp > lastEmergencyUnstakeTime[msg.sender] + cooldown, "Cooldown period has not passed");
         require(stakers[msg.sender].amount > 0, "You don't have any staked amount");
 
         calculateReward(msg.sender);
@@ -180,6 +204,9 @@ contract StakingContract is Ownable, ReentrancyGuard {
         stakers[msg.sender].reward = 0;
         stakers[msg.sender].burnAmount = 0;
         stakers[msg.sender].totalRewardAllocation = 0;
+
+        // Update the last emergency unstake time
+        lastEmergencyUnstakeTime[msg.sender] = block.timestamp;
 
         // Emit Unstaked event
         emit EmergencyUnstaked(msg.sender, total);
