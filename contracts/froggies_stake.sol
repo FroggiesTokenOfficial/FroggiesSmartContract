@@ -11,6 +11,13 @@ contract StakingContract is Ownable, ReentrancyGuard {
     
     IERC20 public token; // Token being staked
 
+    // Hardcoded staking periods and APRs
+    uint256 public constant THREE_MONTHS = 3 * 30 days;
+    uint256 public constant SIX_MONTHS = 6 * 30 days;
+    uint256 public constant TWELVE_MONTHS = 12 * 30 days;
+
+    mapping(uint256 => uint256) public periodRates;
+
 	// Struct representing staker data
     struct Staker {
         uint256 amount;
@@ -22,6 +29,7 @@ contract StakingContract is Ownable, ReentrancyGuard {
         uint256 stakePeriod;
         uint256 lastRewardCalculation;
         uint256 totalRewardAllocation;
+        uint256 initialRewardAllocation;
     }
 
 	// Map to keep track of stakers
@@ -33,35 +41,27 @@ contract StakingContract is Ownable, ReentrancyGuard {
     uint256 public totalBurned;
     uint256 public stakingPool;
 
-	// Map to keep track of the reward rates based on staking period
-    mapping(uint256 => uint256) public periodRates;
-
     // New mapping to store the last emergencyUnstake time for each user
     mapping(address => uint256) public lastEmergencyUnstakeTime;
 
     // Cooldown period after emergencyUnstake
     uint256 public cooldown = 1 days;
 
-	// Variables to define the penalty, burn rate and pool rate in case of emergency unstake
-    uint256 public emergencyWithdrawalPenalty = 25;
+	uint256 public emergencyWithdrawalPenalty = 25;
     uint256 public burnRateEmergency = 40;
-    uint256 public poolRateEmergency = 60;
 
 	// Events
     event Staked(address indexed user, uint256 amount, uint256 reward, uint256 burnAmount);
     event Unstaked(address indexed user, uint256 amount);
     event EmergencyUnstaked(address indexed user, uint256 amount);
     event Burned(uint256 amount);
-    event EmergencyRatesUpdated(uint256 penalty, uint256 burnRate, uint256 poolRate);
 	
 	// Constructor that sets the token to be staked
     constructor(IERC20 _token) {
         token = _token;
-    }
-	
-	// Set the reward rate for a specific period - can set multiple periods and rates
-	function setPeriodRates(uint256 _period, uint256 _rate) external onlyOwner {
-        periodRates[_period] = _rate;
+        periodRates[THREE_MONTHS] = 5;
+        periodRates[SIX_MONTHS] = 15;
+        periodRates[TWELVE_MONTHS] = 40;
     }
 
 	// Add funds to the staking pool
@@ -76,7 +76,7 @@ contract StakingContract is Ownable, ReentrancyGuard {
 
     function stake(uint256 _amount, uint256 _rewardRate, uint256 _burnRate, uint256 _stakePeriod) external nonReentrant {
         require(stakers[msg.sender].amount == 0, "Already staking, you can stake more only after current period ends");
-        require(_rewardRate.add(_burnRate) <= 100, "The total of reward and burn rates must be less than or equal to 100");
+        require(_burnRate == 25 || _burnRate == 50 || _burnRate == 75, "Invalid burn rate");
         require(periodRates[_stakePeriod] > 0, "Invalid staking period");
         
         uint256 totalRate = periodRates[_stakePeriod];
@@ -88,6 +88,12 @@ contract StakingContract is Ownable, ReentrancyGuard {
 
         uint256 burnAmount = totalAllocation.mul(_burnRate).div(100);
 
+        // Burn the burn amount immediately upon staking
+        if (burnAmount > 0) {
+            burn(burnAmount);
+            emit Burned(burnAmount);
+        }
+
         stakers[msg.sender].amount = _amount;
         stakers[msg.sender].stakeTime = block.timestamp;
         stakers[msg.sender].rewardRate = _rewardRate;
@@ -95,10 +101,10 @@ contract StakingContract is Ownable, ReentrancyGuard {
         stakers[msg.sender].stakePeriod = _stakePeriod;
         stakers[msg.sender].burnAmount = burnAmount;
         stakers[msg.sender].totalRewardAllocation = totalAllocation.sub(burnAmount); // Update only the totalRewardAllocation
+        stakers[msg.sender].initialRewardAllocation = totalAllocation.sub(burnAmount);
         stakers[msg.sender].lastRewardCalculation = block.timestamp;
 
         totalStaked = totalStaked.add(_amount);
-        totalAllocated = totalAllocated.add(stakers[msg.sender].totalRewardAllocation);
         totalBurned = totalBurned.add(burnAmount);
         stakingPool = stakingPool.sub(totalAllocation);
 
@@ -107,7 +113,7 @@ contract StakingContract is Ownable, ReentrancyGuard {
 
     function calculateReward(address _staker) internal {
         uint256 timeElapsed;
-        uint256 rewardPerSecond = stakers[_staker].totalRewardAllocation.div(stakers[_staker].stakePeriod);
+        uint256 rewardPerSecond = stakers[_staker].initialRewardAllocation.div(stakers[_staker].stakePeriod);
         uint256 newReward;
 
         // Check if the current time has surpassed the staking period.
@@ -149,23 +155,24 @@ contract StakingContract is Ownable, ReentrancyGuard {
 
         uint256 amount = stakers[msg.sender].amount;
         uint256 reward = stakers[msg.sender].reward;
-        uint256 burnAmount = stakers[msg.sender].burnAmount;
+        
+        // Update totalStaked and totalAllocated before resetting the staker's data
+        totalStaked = totalStaked.sub(amount);
+        totalAllocated = totalAllocated.sub(stakers[msg.sender].totalRewardAllocation);
 
         stakers[msg.sender].amount = 0;
         stakers[msg.sender].stakeTime = 0;
         stakers[msg.sender].reward = 0;
         stakers[msg.sender].burnAmount = 0;
         stakers[msg.sender].totalRewardAllocation = 0;
+        stakers[msg.sender].initialRewardAllocation = 0;
+        stakers[msg.sender].rewardRate = 0;
+        stakers[msg.sender].burnRate = 0;
+        stakers[msg.sender].stakePeriod = 0;
 
-        totalStaked = totalStaked.sub(amount);
-        totalAllocated = totalAllocated.sub(reward); // Update only the reward amount
-        totalBurned = totalBurned.add(burnAmount);
-
-        burn(burnAmount);
         token.transfer(msg.sender, amount.add(reward));
 
         emit Unstaked(msg.sender, amount);
-        emit Burned(burnAmount);
     }
 
     function emergencyUnstake() external nonReentrant {
@@ -192,7 +199,7 @@ contract StakingContract is Ownable, ReentrancyGuard {
         }
 
         // Add the pool amount back to the staking pool
-        stakingPool = stakingPool.add(poolAmount);
+        stakingPool = stakingPool.add(poolAmount).add(stakers[msg.sender].reward);
 
         // Update total staked and total allocated
         totalStaked = totalStaked.sub(stakers[msg.sender].amount);
@@ -204,22 +211,16 @@ contract StakingContract is Ownable, ReentrancyGuard {
         stakers[msg.sender].reward = 0;
         stakers[msg.sender].burnAmount = 0;
         stakers[msg.sender].totalRewardAllocation = 0;
+        stakers[msg.sender].initialRewardAllocation = 0;
+        stakers[msg.sender].rewardRate = 0;
+        stakers[msg.sender].burnRate = 0;
+        stakers[msg.sender].stakePeriod = 0;
 
         // Update the last emergency unstake time
         lastEmergencyUnstakeTime[msg.sender] = block.timestamp;
 
         // Emit Unstaked event
         emit EmergencyUnstaked(msg.sender, total);
-    }
-
-    // Function for the owner to set the rates
-    function setEmergencyWithdrawalRates(uint256 _penalty, uint256 _burnRate, uint256 _poolRate) external onlyOwner {
-        require(_penalty <= 25, "Penalty should not be more than 25%");
-        require(_burnRate.add(_poolRate) == 100, "Sum of burn and pool rates should be equal to 100");
-        emergencyWithdrawalPenalty = _penalty;
-        burnRateEmergency = _burnRate;
-        poolRateEmergency = _poolRate;
-        emit EmergencyRatesUpdated(_penalty, _burnRate, _poolRate);
     }
 
     function burn(uint256 amount) private {
@@ -232,8 +233,18 @@ contract StakingContract is Ownable, ReentrancyGuard {
 
 	// Get the accumulated reward of a staker based on the time elapsed
     function getAccumulatedReward(address _staker) public view returns (uint256) {
-        uint256 timeElapsed = block.timestamp.sub(stakers[_staker].lastRewardCalculation);
-        uint256 rewardPerSecond = stakers[_staker].totalRewardAllocation.div(stakers[_staker].stakePeriod);
+        uint256 timeElapsed;
+        uint256 rewardPerSecond = stakers[_staker].initialRewardAllocation.div(stakers[_staker].stakePeriod);
+        
+        // Check if the current time has surpassed the staking period.
+        if (block.timestamp > stakers[_staker].stakeTime.add(stakers[_staker].stakePeriod)) {
+            // If so, use the staking period end time for the final reward calculation.
+            timeElapsed = (stakers[_staker].stakeTime.add(stakers[_staker].stakePeriod)).sub(stakers[_staker].lastRewardCalculation);
+        } else {
+            // If not, calculate the time elapsed since the last reward calculation.
+            timeElapsed = block.timestamp.sub(stakers[_staker].lastRewardCalculation);
+        }
+        
         uint256 accumulatedReward = rewardPerSecond.mul(timeElapsed);
         return accumulatedReward.add(stakers[_staker].reward);
     }
