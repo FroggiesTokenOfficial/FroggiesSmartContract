@@ -138,6 +138,9 @@ contract StakingContract is Ownable, ReentrancyGuard {
         calculateReward(msg.sender);
         
         uint256 reward = stakers[msg.sender].reward;
+
+        // Update the totalAllocated before setting the staker's reward to zero
+        totalAllocated = totalAllocated.sub(reward);
         
         // Update the staker's reward and total reward allocation
         stakers[msg.sender].reward = 0;
@@ -186,7 +189,6 @@ contract StakingContract is Ownable, ReentrancyGuard {
         uint256 total = stakers[msg.sender].amount.add(uncollectedReward);
         uint256 penalty = total.mul(emergencyWithdrawalPenalty).div(100);
         uint256 burnAmount = penalty.mul(burnRateEmergency).div(100);
-        burnAmount = burnAmount.add(stakers[msg.sender].burnAmount);
         uint256 poolAmount = penalty.sub(burnAmount);
 
         // Transfer the remaining amount after penalty to the user
