@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 
+
 contract StakingContract is Ownable, ReentrancyGuard {
     using SafeMath for uint256;
     
@@ -24,7 +25,6 @@ contract StakingContract is Ownable, ReentrancyGuard {
         uint256 stakeTime;
         uint256 reward;
         uint256 burnAmount;
-        uint256 rewardRate;
         uint256 burnRate;
         uint256 stakePeriod;
         uint256 lastRewardCalculation;
@@ -71,43 +71,40 @@ contract StakingContract is Ownable, ReentrancyGuard {
         token.transferFrom(msg.sender, address(this), _amount);
         uint256 received = token.balanceOf(address(this)).sub(balanceBefore);
         assert(received == _amount);
-        stakingPool = stakingPool.add(_amount);
+        stakingPool = token.balanceOf(address(this));
     }
 
-    function stake(uint256 _amount, uint256 _rewardRate, uint256 _burnRate, uint256 _stakePeriod) external nonReentrant {
+    function stake(uint256 _amount, uint256 _burnRate, uint256 _stakePeriod) external nonReentrant {
         require(stakers[msg.sender].amount == 0, "Already staking, you can stake more only after current period ends");
         require(_burnRate == 25 || _burnRate == 50 || _burnRate == 75, "Invalid burn rate");
         require(periodRates[_stakePeriod] > 0, "Invalid staking period");
         
         uint256 totalRate = periodRates[_stakePeriod];
-        uint256 totalAllocation = _amount.mul(totalRate).div(100);
+        uint256 totalRewardAllocation = _amount.mul(totalRate).div(100);
 
-        require(stakingPool >= totalAllocation, "Staking pool has not enough funds");
-
+        require(stakingPool >= totalRewardAllocation, "Staking pool has not enough funds");
         token.transferFrom(msg.sender, address(this), _amount);
 
-        uint256 burnAmount = totalAllocation.mul(_burnRate).div(100);
+        uint256 burnAmount = totalRewardAllocation.mul(_burnRate).div(100);
+        
 
         // Burn the burn amount immediately upon staking
         if (burnAmount > 0) {
             burn(burnAmount);
             emit Burned(burnAmount);
         }
-
         stakers[msg.sender].amount = _amount;
         stakers[msg.sender].stakeTime = block.timestamp;
-        stakers[msg.sender].rewardRate = _rewardRate;
         stakers[msg.sender].burnRate = _burnRate;
         stakers[msg.sender].stakePeriod = _stakePeriod;
         stakers[msg.sender].burnAmount = burnAmount;
-        stakers[msg.sender].totalRewardAllocation = totalAllocation.sub(burnAmount); // Update only the totalRewardAllocation
-        stakers[msg.sender].initialRewardAllocation = totalAllocation.sub(burnAmount);
+        stakers[msg.sender].totalRewardAllocation = totalRewardAllocation.sub(burnAmount); // Update only the totalRewardAllocation
+        stakers[msg.sender].initialRewardAllocation = totalRewardAllocation.sub(burnAmount);
         stakers[msg.sender].lastRewardCalculation = block.timestamp;
 
         totalStaked = totalStaked.add(_amount);
-        totalBurned = totalBurned.add(burnAmount);
-        stakingPool = stakingPool.sub(totalAllocation);
         totalAllocated += stakers[msg.sender].totalRewardAllocation;
+        stakingPool = token.balanceOf(address(this));
         
         emit Staked(msg.sender, _amount, stakers[msg.sender].totalRewardAllocation, stakers[msg.sender].burnAmount);
     }
@@ -129,7 +126,7 @@ contract StakingContract is Ownable, ReentrancyGuard {
         newReward = rewardPerSecond.mul(timeElapsed);
         stakers[_staker].reward = stakers[_staker].reward.add(newReward);
         stakers[_staker].lastRewardCalculation = block.timestamp;
-        }
+    }
 
     function withdrawReward() external nonReentrant {
         require(stakers[msg.sender].amount > 0, "You are not staking");
@@ -148,6 +145,7 @@ contract StakingContract is Ownable, ReentrancyGuard {
         
         // Transfer the reward tokens to the staker
         token.transfer(msg.sender, reward);
+        stakingPool = token.balanceOf(address(this));
     }
 
     function unstake() external nonReentrant {
@@ -169,12 +167,11 @@ contract StakingContract is Ownable, ReentrancyGuard {
         stakers[msg.sender].burnAmount = 0;
         stakers[msg.sender].totalRewardAllocation = 0;
         stakers[msg.sender].initialRewardAllocation = 0;
-        stakers[msg.sender].rewardRate = 0;
         stakers[msg.sender].burnRate = 0;
         stakers[msg.sender].stakePeriod = 0;
 
         token.transfer(msg.sender, amount.add(reward));
-
+        stakingPool = token.balanceOf(address(this));
         emit Unstaked(msg.sender, amount);
     }
 
@@ -184,11 +181,13 @@ contract StakingContract is Ownable, ReentrancyGuard {
         require(stakers[msg.sender].amount > 0, "You don't have any staked amount");
 
         calculateReward(msg.sender); 
-        uint256 uncollectedReward = stakers[msg.sender].reward;
-        uint256 total = stakers[msg.sender].amount.add(uncollectedReward);
-        uint256 penalty = total.mul(emergencyWithdrawalPenalty).div(100);
-        uint256 burnAmount = penalty.mul(burnRateEmergency).div(100);
-        uint256 poolAmount = penalty.sub(burnAmount);
+        uint256 uncollectedReward = stakers[msg.sender].reward; 
+        uint256 total = stakers[msg.sender].amount.add(uncollectedReward); 
+
+        uint256 penalty = total.mul(emergencyWithdrawalPenalty).div(100); 
+        uint256 burnAmount = penalty.mul(burnRateEmergency).div(100); 
+
+        uint256 rewardLeftOver = stakers[msg.sender].totalRewardAllocation - uncollectedReward; 
         // Transfer the remaining amount after penalty to the user
         token.transfer(msg.sender, total.sub(penalty));
 
@@ -198,13 +197,10 @@ contract StakingContract is Ownable, ReentrancyGuard {
             emit Burned(burnAmount);
         }
 
-        // Add the pool amount back to the staking pool
-        stakingPool = stakingPool.add(poolAmount).add(stakers[msg.sender].reward);
-
         // Update total staked and total allocated
         totalStaked = totalStaked.sub(stakers[msg.sender].amount);
-        totalAllocated -= (stakers[msg.sender].totalRewardAllocation - uncollectedReward);//totalAllocated.sub(uncollectedReward).add(poolAmount);
-        
+        totalAllocated -= rewardLeftOver;
+
         // Reset staker's information
         stakers[msg.sender].amount = 0;
         stakers[msg.sender].stakeTime = 0;
@@ -212,13 +208,13 @@ contract StakingContract is Ownable, ReentrancyGuard {
         stakers[msg.sender].burnAmount = 0;
         stakers[msg.sender].totalRewardAllocation = 0;
         stakers[msg.sender].initialRewardAllocation = 0;
-        stakers[msg.sender].rewardRate = 0;
         stakers[msg.sender].burnRate = 0;
         stakers[msg.sender].stakePeriod = 0;
 
         // Update the last emergency unstake time
         lastEmergencyUnstakeTime[msg.sender] = block.timestamp;
-
+    
+        stakingPool = token.balanceOf(address(this));
         // Emit Unstaked event
         emit EmergencyUnstaked(msg.sender, total);
     }
@@ -265,4 +261,3 @@ contract StakingContract is Ownable, ReentrancyGuard {
         return totalBurned;
     }
 }
-
